@@ -1,312 +1,359 @@
-import { useState, useEffect } from 'react'
 import Head from 'next/head'
+import { useState, useEffect } from 'react'
+import AuthModal from '../components/AuthModal'
 import { supabase } from '../lib/supabase'
-import DonationCheckout from '../components/DonationCheckout'
 
-const MONTOS = [180, 500, 1800, 5000]
+// Testimonios fijos — Andres los agrega/edita manualmente aquí
+const testimonials: { comment: string; donor_name: string; community?: string }[] = [
+  // Ejemplo: { comment: 'Donar aquí fue muy fácil y rápido.', donor_name: 'María G.', community: 'Comedor Esperanza' },
+]
 
-export default function OlamiPage() {
-  const [community, setCommunity] = useState<any>(null)
-  const [projects, setProjects] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [selectedProject, setSelectedProject] = useState<any>(null)
-  const [amount, setAmount] = useState(500)
-  const [customAmount, setCustomAmount] = useState('')
-  const [donorName, setDonorName] = useState('')
-  const [donorEmail, setDonorEmail] = useState('')
-  const [anonymous, setAnonymous] = useState(false)
-  const [showCheckout, setShowCheckout] = useState(false)
-  const [donated, setDonated] = useState(false)
-  const [error, setError] = useState('')
+export default function Home() {
+  const [showAuth, setShowAuth] = useState(false)
+  const [showCommunityForm, setShowCommunityForm] = useState(false)
+  const [commReq, setCommReq] = useState({ name: '', email: '', institution: '', phone: '' })
+  const [commReqSent, setCommReqSent] = useState(false)
+  const [commReqLoading, setCommReqLoading] = useState(false)
+  const [stats, setStats] = useState({ donors: 0, communities: 0, raised: 0 })
+
+  const sendCommunityRequest = async () => {
+    if (!commReq.email || !commReq.institution) return
+    setCommReqLoading(true)
+    try {
+      await supabase.from('communities').insert([{
+        name: commReq.institution,
+        contact_email: commReq.email,
+        contact_name: commReq.name,
+        contact_phone: commReq.phone,
+        status: 'pending',
+        category: 'Otro',
+        city: '',
+        image_url: '',
+        goal_amount: 0,
+        raised_amount: 0,
+      }])
+      setCommReqSent(true)
+    } catch (_) {}
+    setCommReqLoading(false)
+  }
 
   useEffect(() => {
-    const load = async () => {
-      const { data: comm } = await supabase.from('communities')
-        .select('*').eq('name', 'Colegio Olamí ORT').single()
-      if (comm) {
-        setCommunity(comm)
-        const { data: projs } = await supabase.from('projects')
-          .select('*').eq('community_id', comm.id).eq('status', 'active')
-          .order('created_at', { ascending: false })
-        setProjects(projs || [])
-      }
-      setLoading(false)
-    }
-    load()
+    // Load real stats
+    Promise.all([
+      supabase.from('donations').select('donor_email', { count: 'exact' }),
+      supabase.from('communities').select('id', { count: 'exact' }).eq('status', 'approved'),
+      supabase.from('donations').select('amount'),
+    ]).then(([donors, communities, amounts]) => {
+      const totalRaised = (amounts.data || []).reduce((sum, d) => sum + d.amount, 0)
+      setStats({
+        donors: donors.count || 0,
+        communities: communities.count || 0,
+        raised: totalRaised,
+      })
+    })
   }, [])
 
-  const finalAmount = customAmount ? Number(customAmount) : amount
-
-  const handleDonate = () => {
-    setError('')
-    if (!donorEmail.trim()) { setError('Escribe tu correo para enviarte el certificado.'); return }
-    if (finalAmount < 10) { setError('El monto mínimo es $10 MXN.'); return }
-    setShowCheckout(true)
-  }
-
-  const handleSuccess = async () => {
-    if (!community) return
-    await supabase.from('communities').update({
-      raised_amount: (community.raised_amount || 0) + finalAmount
-    }).eq('id', community.id)
-
-    if (selectedProject) {
-      await supabase.from('projects').update({
-        raised_amount: (selectedProject.raised_amount || 0) + finalAmount
-      }).eq('id', selectedProject.id)
-      setProjects(ps => ps.map(p => p.id === selectedProject.id
-        ? { ...p, raised_amount: (p.raised_amount || 0) + finalAmount } : p))
-    }
-
-    const displayName = anonymous ? 'Anónimo' : (donorName.trim() || 'Anónimo')
-
-    await supabase.from('donations').insert([{
-      community_id: community.id,
-      donor_name: displayName,
-      donor_email: donorEmail,
-      amount: finalAmount,
-      frequency: 'única',
-    }])
-
-    await fetch('/api/send-donation-confirmation', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        donorEmail, donorName: displayName, amount: finalAmount,
-        communityName: selectedProject ? `${community.name} — ${selectedProject.name}` : community.name,
-        frequency: 'única'
-      })
-    }).catch(() => {})
-
-    await fetch('/api/send-community-notification', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        communityEmail: community.contact_email, communityName: community.name,
-        amount: finalAmount, donorDisplayName: displayName
-      })
-    }).catch(() => {})
-
-    setShowCheckout(false)
-    setDonated(true)
-  }
-
-  const reset = () => {
-    setDonated(false); setSelectedProject(null); setAmount(500); setCustomAmount('')
-    setDonorName(''); setDonorEmail(''); setAnonymous(false); setError('')
-  }
-
-  if (loading) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#FAFBFC' }}>
-      <div style={{ width: 32, height: 32, border: '3px solid #55B584', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
-    </div>
-  )
-
-  if (!community) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#FAFBFC', padding: 24 }}>
-      <p style={{ color: '#6F737D' }}>No se encontró la institución.</p>
-    </div>
-  )
-
-  if (donated) return (
-    <>
-      <Head><title>¡Gracias! — Colegio Olamí ORT</title></Head>
-      <div style={{ minHeight: '100vh', background: '#FAFBFC', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <div style={{ background: '#fff', borderRadius: 24, padding: 48, textAlign: 'center', maxWidth: 460, width: '100%', boxShadow: '0 4px 24px rgba(0,0,0,0.06)' }}>
-          <div style={{ fontSize: 56, marginBottom: 16 }}>💚</div>
-          <h1 style={{ fontSize: 26, fontWeight: 900, color: '#121826', marginBottom: 12 }}>¡Gracias por donar!</h1>
-          <p style={{ color: '#6F737D', fontSize: 15, lineHeight: 1.6, marginBottom: 24 }}>
-            Tu donación de <strong style={{ color: '#55B584' }}>${finalAmount.toLocaleString('es-MX')} MXN</strong>
-            {selectedProject && <> a <strong>{selectedProject.name}</strong></>} fue procesada correctamente.
-          </p>
-          <p style={{ color: '#9CA3AF', fontSize: 13, marginBottom: 28 }}>
-            Te enviamos tu certificado de donación a <strong>{donorEmail}</strong>
-          </p>
-          <button onClick={reset} style={{ background: '#55B584', color: '#fff', fontWeight: 700, fontSize: 15, padding: '14px 32px', borderRadius: 100, border: 'none', cursor: 'pointer' }}>
-            Hacer otra donación
-          </button>
-        </div>
-      </div>
-    </>
-  )
-
-  if (showCheckout) return (
-    <>
-      <Head><title>Pago — Colegio Olamí ORT</title></Head>
-      <div style={{ minHeight: '100vh', background: '#FAFBFC', padding: '40px 24px' }}>
-        <div style={{ maxWidth: 460, margin: '0 auto', background: '#fff', borderRadius: 24, padding: 32, boxShadow: '0 4px 24px rgba(0,0,0,0.06)' }}>
-          <DonationCheckout
-            amount={finalAmount}
-            communityName={selectedProject ? `${community.name} — ${selectedProject.name}` : community.name}
-            communityId={community.id}
-            donorEmail={donorEmail}
-            donorName={anonymous ? 'Anónimo' : donorName}
-            onSuccess={handleSuccess}
-            onCancel={() => setShowCheckout(false)}
-          />
-        </div>
-      </div>
-    </>
-  )
+  const formatStats = (n: number) => n >= 1000000 ? `$${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : n.toString()
 
   return (
     <>
       <Head>
-        <title>Donar — Colegio Olamí ORT</title>
-        <meta name="description" content="Apoya al Colegio Olamí ORT. Dona en segundos, de forma segura." />
+        <title>Donekta — Dona con propósito</title>
+        <meta name="description" content="Conectamos donadores con comunidades reales de México." />
+        <link rel="icon" href="/logo-marca-corazon.svg" />
+        <meta property="og:title" content="Donekta — Dona con propósito" />
+        <meta property="og:description" content="Conectamos donadores con comunidades reales de México." />
+        <meta property="og:image" content="/og-image.png" />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta property="twitter:card" content="summary_large_image" />
+        <meta property="twitter:image" content="/og-image.png" />
       </Head>
 
-      <div style={{ minHeight: '100vh', background: '#FAFBFC' }}>
-        {/* HEADER */}
-        <div style={{ background: '#fff', borderBottom: '1px solid #F0F4F8', padding: '20px 24px' }}>
-          <div style={{ maxWidth: 620, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            {community.image_url && <img src={community.image_url} alt={community.name} style={{ height: 44, objectFit: 'contain' }} />}
-            <a href="/" style={{ fontSize: 13, color: '#9CA3AF', textDecoration: 'none' }}>Powered by Donekta</a>
+      {/* NAV */}
+      <nav style={{ background: '#fff', borderBottom: '1px solid #F0F4F8', position: 'sticky', top: 0, zIndex: 50 }}>
+        <div className="nav-inner" style={{ maxWidth: 1100, margin: '0 auto', padding: '0 24px', height: 68, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <img src="/logo-donekta-oscuro.svg" alt="Donekta" style={{ height: 36 }} />
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <button onClick={() => setShowCommunityForm(true)} className="nav-secondary-btn" style={{ fontSize: 14, color: '#6F737D', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 16px' }}>
+              Soy comunidad
+            </button>
+            <button onClick={() => setShowAuth(true)} style={{ fontSize: 14, fontWeight: 600, color: '#fff', background: '#55B584', border: 'none', cursor: 'pointer', padding: '10px 22px', borderRadius: 100 }}>
+              Quiero donar
+            </button>
           </div>
         </div>
+      </nav>
 
-        {/* HERO */}
-        <div style={{ background: '#EDFBF4', padding: '48px 24px', textAlign: 'center' }}>
-          <h1 style={{ fontSize: 32, fontWeight: 900, color: '#121826', marginBottom: 12, lineHeight: 1.2 }}>
-            Apoya al Colegio Olamí ORT
-          </h1>
-          <p style={{ fontSize: 16, color: '#6F737D', maxWidth: 480, margin: '0 auto', lineHeight: 1.6 }}>
-            Tu donación llega directo al colegio. Elige a qué proyecto quieres apoyar y dona en menos de un minuto.
-          </p>
-        </div>
-
-        <div style={{ maxWidth: 620, margin: '0 auto', padding: '40px 24px 80px' }}>
-
-          {/* PROYECTOS */}
-          <div style={{ marginBottom: 32 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 900, color: '#121826', marginBottom: 16 }}>¿A qué quieres apoyar?</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <button onClick={() => setSelectedProject(null)}
-                style={{
-                  width: '100%', textAlign: 'left', padding: 20, borderRadius: 16, cursor: 'pointer',
-                  border: !selectedProject ? '2px solid #55B584' : '2px solid #E5E7EB',
-                  background: !selectedProject ? '#EDFBF4' : '#fff',
-                }}>
-                <p style={{ fontWeight: 700, color: '#121826', fontSize: 15, marginBottom: 4 }}>Donación general</p>
-                <p style={{ fontSize: 13, color: '#6F737D' }}>El colegio decide dónde se necesita más.</p>
+      {/* HERO */}
+      <section style={{ background: '#EDFBF4', padding: '80px 24px' }} className="hero-section">
+        <div className="hero-grid" style={{ maxWidth: 1100, margin: '0 auto', display: 'grid', gridTemplateColumns: testimonials.length > 0 ? '1fr 1fr' : '1fr', gap: 48, alignItems: 'center' }}>
+          <div className={testimonials.length === 0 ? 'hero-text-centered' : ''}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#fff', border: '1px solid #D1F5E3', borderRadius: 100, padding: '6px 16px', marginBottom: 24 }}>
+              <span style={{ width: 8, height: 8, background: '#55B584', borderRadius: '50%', display: 'inline-block' }} />
+              <span style={{ fontSize: 13, color: '#55B584', fontWeight: 600 }}>Conectando comunidades con donadores</span>
+            </div>
+            <h1 className="hero-title" style={{ fontSize: 52, fontWeight: 900, color: '#121826', lineHeight: 1.15, marginBottom: 20 }}>
+              Dona con<br /><span style={{ color: '#55B584' }}>propósito</span>
+            </h1>
+            <p className="hero-desc" style={{ fontSize: 18, color: '#6F737D', lineHeight: 1.7, marginBottom: 36, maxWidth: 480 }}>
+              Conectamos donadores con comunidades reales de México. Cada aportación llega directo a quienes más lo necesitan.
+            </p>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <button onClick={() => setShowAuth(true)} style={{ fontSize: 15, fontWeight: 700, color: '#fff', background: '#55B584', border: 'none', cursor: 'pointer', padding: '14px 32px', borderRadius: 100 }}>
+                Quiero donar →
               </button>
-
-              {projects.map((p: any) => {
-                const pct = p.goal_amount > 0 ? Math.min(100, ((p.raised_amount || 0) / p.goal_amount) * 100) : 0
-                const active = selectedProject?.id === p.id
-                return (
-                  <button key={p.id} onClick={() => setSelectedProject(p)}
-                    style={{
-                      width: '100%', textAlign: 'left', padding: 20, borderRadius: 16, cursor: 'pointer',
-                      border: active ? '2px solid #55B584' : '2px solid #E5E7EB',
-                      background: active ? '#EDFBF4' : '#fff',
-                    }}>
-                    <p style={{ fontWeight: 700, color: '#121826', fontSize: 15, marginBottom: 4 }}>{p.name}</p>
-                    {p.description && <p style={{ fontSize: 13, color: '#6F737D', marginBottom: 12, lineHeight: 1.5 }}>{p.description}</p>}
-                    {p.goal_amount > 0 && (
-                      <>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#9CA3AF', marginBottom: 6 }}>
-                          <span><strong style={{ color: '#55B584' }}>${(p.raised_amount || 0).toLocaleString('es-MX')}</strong> recaudados</span>
-                          <span>Meta: ${p.goal_amount.toLocaleString('es-MX')}</span>
-                        </div>
-                        <div style={{ width: '100%', background: '#E5E7EB', borderRadius: 100, height: 6 }}>
-                          <div style={{ width: `${pct}%`, background: '#55B584', height: 6, borderRadius: 100, transition: 'width 0.4s' }} />
-                        </div>
-                      </>
-                    )}
-                  </button>
-                )
-              })}
             </div>
           </div>
 
-          {/* MONTO */}
-          <div style={{ marginBottom: 32 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 900, color: '#121826', marginBottom: 16 }}>Elige un monto</h2>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 12 }}>
-              {MONTOS.map(m => (
-                <button key={m} onClick={() => { setAmount(m); setCustomAmount('') }}
-                  style={{
-                    padding: '14px 0', borderRadius: 12, fontSize: 15, fontWeight: 700, cursor: 'pointer',
-                    border: (!customAmount && amount === m) ? '2px solid #55B584' : '2px solid #E5E7EB',
-                    background: (!customAmount && amount === m) ? '#EDFBF4' : '#fff',
-                    color: (!customAmount && amount === m) ? '#0B3D2E' : '#6F737D',
-                  }}>
-                  ${m.toLocaleString('es-MX')}
-                </button>
+          {/* COMENTARIOS EN HERO — solo se muestran si hay testimonios */}
+          {testimonials.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {testimonials.map((c, i) => (
+                <div key={i} style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #D1F5E3', boxShadow: '0 2px 8px rgba(85,181,132,0.08)' }}>
+                  <p style={{ fontSize: 14, color: '#6F737D', lineHeight: 1.6, marginBottom: 12, fontStyle: 'italic' }}>"{c.comment}"</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#EDFBF4', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#55B584', flexShrink: 0 }}>
+                      {(c.donor_name || 'A')[0].toUpperCase()}
+                    </div>
+                    <div>
+                      <p style={{ fontSize: 12, fontWeight: 600, color: '#121826' }}>{c.donor_name || 'Anónimo'}</p>
+                      {c.community && <p style={{ fontSize: 11, color: '#6F737D' }}>Donó a {c.community}</p>}
+                    </div>
+                  </div>
+                </div>
               ))}
             </div>
-            <input type="number" placeholder="$ Otro monto" value={customAmount}
-              onChange={e => setCustomAmount(e.target.value)}
-              style={{ width: '100%', border: '1px solid #E5E7EB', borderRadius: 12, padding: '14px 16px', fontSize: 15, outline: 'none' }} />
-          </div>
-
-          {/* DATOS */}
-          <div style={{ marginBottom: 24 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 900, color: '#121826', marginBottom: 16 }}>Tus datos</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <input type="email" placeholder="Tu correo *" value={donorEmail}
-                onChange={e => setDonorEmail(e.target.value)}
-                style={{ width: '100%', border: '1px solid #E5E7EB', borderRadius: 12, padding: '14px 16px', fontSize: 15, outline: 'none' }} />
-              {!anonymous && (
-                <input type="text" placeholder="Tu nombre (opcional)" value={donorName}
-                  onChange={e => setDonorName(e.target.value)}
-                  style={{ width: '100%', border: '1px solid #E5E7EB', borderRadius: 12, padding: '14px 16px', fontSize: 15, outline: 'none' }} />
-              )}
-              <div onClick={() => setAnonymous(!anonymous)}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '4px 0' }}>
-                <div style={{
-                  width: 20, height: 20, borderRadius: 5, flexShrink: 0,
-                  border: anonymous ? 'none' : '2px solid #D1D5DB',
-                  background: anonymous ? '#55B584' : '#fff',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  {anonymous && <span style={{ color: '#fff', fontSize: 13, fontWeight: 900 }}>✓</span>}
-                </div>
-                <span style={{ fontSize: 14, color: '#6F737D' }}>Donar de forma anónima</span>
-              </div>
-            </div>
-          </div>
-
-          {error && (
-            <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', color: '#B91C1C', fontSize: 14, padding: '12px 16px', borderRadius: 12, marginBottom: 16 }}>
-              {error}
-            </div>
           )}
+        </div>
+      </section>
 
-          {/* BOTÓN DONAR */}
-          <button onClick={handleDonate}
-            style={{
-              width: '100%', background: '#55B584', color: '#fff', fontWeight: 800, fontSize: 17,
-              padding: '18px 0', borderRadius: 100, border: 'none', cursor: 'pointer',
-              boxShadow: '0 4px 16px rgba(85,181,132,0.3)',
-            }}>
-            Donar ${finalAmount.toLocaleString('es-MX')} MXN
-          </button>
+      {/* STATS REALES */}
+      <section style={{ background: '#121826', padding: '48px 24px' }}>
+        <div className="stats-grid" style={{ maxWidth: 900, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 32, textAlign: 'center' }}>
+          <div>
+            <p style={{ fontSize: 36, fontWeight: 900, color: '#55B584', marginBottom: 4 }}>{stats.donors > 0 ? `${stats.donors}+` : '...'}</p>
+            <p style={{ fontSize: 14, color: '#9CA3AF' }}>Donadores activos</p>
+          </div>
+          <div>
+            <p style={{ fontSize: 36, fontWeight: 900, color: '#55B584', marginBottom: 4 }}>{stats.communities > 0 ? `${stats.communities}+` : '...'}</p>
+            <p style={{ fontSize: 14, color: '#9CA3AF' }}>Instituciones para donar</p>
+          </div>
+          <div>
+            <p style={{ fontSize: 36, fontWeight: 900, color: '#55B584', marginBottom: 4 }}>{stats.raised > 0 ? `$${formatStats(stats.raised)}` : '...'}</p>
+            <p style={{ fontSize: 14, color: '#9CA3AF' }}>MXN donados</p>
+          </div>
+        </div>
+      </section>
 
-          {/* TRANSPARENCIA */}
-          <div style={{ marginTop: 28, padding: 20, background: '#fff', borderRadius: 16, border: '1px solid #F0F4F8' }}>
-            <p style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 12 }}>¿A dónde va tu donación?</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#6F737D' }}>💚 Colegio Olamí ORT (94.4%)</span>
-                <strong style={{ color: '#55B584' }}>${(finalAmount * 0.944).toLocaleString('es-MX', { maximumFractionDigits: 2 })}</strong>
+      {/* CÓMO FUNCIONA */}
+      <section style={{ padding: '80px 24px', background: '#fff' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: 56 }}>
+            <h2 style={{ fontSize: 36, fontWeight: 900, color: '#121826', marginBottom: 12 }}>¿Cómo funciona?</h2>
+            <p style={{ fontSize: 16, color: '#6F737D' }}>Tres pasos para hacer la diferencia</p>
+          </div>
+          <div className="how-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 32 }}>
+            {[
+              { img: '/paso-1-registrate.svg', title: 'Regístrate', desc: 'Crea tu cuenta como donador o representa a tu comunidad en minutos.' },
+              { img: '/paso-2-conecta.svg', title: 'Conecta', desc: 'Elige la comunidad que quieres apoyar y realiza tu donación de forma segura.' },
+              { img: '/paso-3-impacta.svg', title: 'Impacta', desc: 'El dinero llega directo. Seguimiento en tiempo real del impacto generado.' },
+            ].map(s => (
+              <div key={s.title} style={{ textAlign: 'center', padding: 32, background: '#EDFBF4', borderRadius: 20 }}>
+                <div style={{ width: 80, height: 80, margin: '0 auto 20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <img src={s.img} alt={s.title} style={{ width: 64, height: 64 }} />
+                </div>
+                <h3 style={{ fontSize: 20, fontWeight: 700, color: '#121826', marginBottom: 8 }}>{s.title}</h3>
+                <p style={{ fontSize: 14, color: '#6F737D', lineHeight: 1.6 }}>{s.desc}</p>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#9CA3AF' }}>💳 Stripe (3.6%)</span>
-                <span style={{ color: '#9CA3AF' }}>${(finalAmount * 0.036).toLocaleString('es-MX', { maximumFractionDigits: 2 })}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#9CA3AF' }}>🌱 Donekta (2%)</span>
-                <span style={{ color: '#9CA3AF' }}>${(finalAmount * 0.02).toLocaleString('es-MX', { maximumFractionDigits: 2 })}</span>
-              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* COMISIONES */}
+      <section style={{ padding: '80px 24px', background: '#121826' }}>
+        <div style={{ maxWidth: 700, margin: '0 auto', textAlign: 'center' }}>
+          <h2 style={{ fontSize: 36, fontWeight: 900, color: '#fff', marginBottom: 16 }}>Transparencia total</h2>
+          <p style={{ fontSize: 16, color: '#9CA3AF', marginBottom: 8, lineHeight: 1.7 }}>
+            El <strong style={{ color: '#55B584' }}>94.4%</strong> de tu donación llega directo a la comunidad. El resto cubre el procesamiento seguro del pago y el mantenimiento de la plataforma.
+          </p>
+          <p style={{ fontSize: 14, color: '#6B7280', marginBottom: 40, lineHeight: 1.6 }}>
+            Gracias a esto podemos seguir conectando donadores con comunidades reales en todo México, garantizando pagos seguros y transparentes.
+          </p>
+          <div className="comision-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 40 }}>
+            <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 24 }}>
+              <p style={{ fontSize: 30, fontWeight: 900, color: '#55B584', marginBottom: 4 }}>94.4%</p>
+              <p style={{ fontSize: 13, color: '#9CA3AF' }}>Va a la comunidad</p>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 24 }}>
+              <p style={{ fontSize: 30, fontWeight: 900, color: '#fff', marginBottom: 4 }}>2%</p>
+              <p style={{ fontSize: 13, color: '#9CA3AF' }}>Mantiene Donekta activa</p>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 24 }}>
+              <p style={{ fontSize: 30, fontWeight: 900, color: '#9CA3AF', marginBottom: 4 }}>3.6%</p>
+              <p style={{ fontSize: 13, color: '#9CA3AF' }}>Procesamiento (Stripe)</p>
             </div>
           </div>
 
-          <p style={{ textAlign: 'center', fontSize: 12, color: '#9CA3AF', marginTop: 20, lineHeight: 1.6 }}>
-            Pago seguro procesado por Stripe · Recibirás tu certificado por correo
-          </p>
+          {/* LOGOS DE PAGO */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20, flexWrap: 'wrap', padding: '20px', background: 'rgba(255,255,255,0.05)', borderRadius: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 16 }}>🔒</span>
+              <span style={{ fontSize: 13, color: '#9CA3AF', fontWeight: 500 }}>SSL Seguro</span>
+            </div>
+            <span style={{ color: '#374151' }}>·</span>
+            <div style={{ background: '#fff', borderRadius: 6, padding: '6px 12px', display: 'flex', alignItems: 'center' }}>
+              <img src="/stripe-logo.png" alt="Stripe" style={{ height: 16, display: 'block' }} />
+            </div>
+            <span style={{ color: '#374151' }}>·</span>
+            <div style={{ background: '#fff', borderRadius: 6, padding: '6px 12px', display: 'flex', alignItems: 'center' }}>
+              <img src="/visa.png" alt="Visa" style={{ height: 16, display: 'block' }} />
+            </div>
+            <span style={{ color: '#374151' }}>·</span>
+            <div style={{ background: '#fff', borderRadius: 6, padding: '6px 10px', display: 'flex', alignItems: 'center' }}>
+              <img src="/mastercard.png" alt="Mastercard" style={{ height: 20, display: 'block' }} />
+            </div>
+            <span style={{ color: '#374151' }}>·</span>
+            <div style={{ background: '#fff', borderRadius: 6, padding: '6px 10px', display: 'flex', alignItems: 'center' }}>
+              <img src="/american-express.svg" alt="American Express" style={{ height: 18, display: 'block' }} />
+            </div>
+          </div>
         </div>
+      </section>
+
+      {/* CTA */}
+      <section style={{ padding: '80px 24px', background: '#55B584' }}>
+        <div style={{ maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
+          <h2 style={{ fontSize: 36, fontWeight: 900, color: '#fff', marginBottom: 16 }}>¿Listo para hacer la diferencia?</h2>
+          <p style={{ fontSize: 16, color: 'rgba(255,255,255,0.85)', marginBottom: 36, lineHeight: 1.7 }}>
+            Únete a la comunidad de donadores que ya están cambiando vidas en México.
+          </p>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button onClick={() => setShowAuth(true)} style={{ fontSize: 15, fontWeight: 700, color: '#55B584', background: '#fff', border: 'none', cursor: 'pointer', padding: '14px 32px', borderRadius: 100 }}>
+              Quiero donar
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <footer style={{ background: '#0D1117', padding: '48px 24px 24px' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+          <div className="footer-grid" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 40, marginBottom: 40 }}>
+            <div>
+              <img src="/logo-donekta-claro.svg" alt="Donekta" style={{ height: 32, marginBottom: 16 }} />
+              <p style={{ fontSize: 14, color: '#6B7280', lineHeight: 1.7, maxWidth: 280 }}>
+                Dona con propósito · Conectamos donadores con comunidades reales.
+              </p>
+            </div>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#fff', marginBottom: 16 }}>Plataforma</p>
+              {['Comunidades', 'Cómo funciona', 'Comisiones'].map(l => (
+                <p key={l} style={{ fontSize: 14, color: '#6B7280', marginBottom: 8 }}>{l}</p>
+              ))}
+            </div>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#fff', marginBottom: 16 }}>Legal</p>
+              {['Términos', 'Privacidad', 'Reembolsos'].map(l => (
+                <p key={l} style={{ fontSize: 14, color: '#6B7280', marginBottom: 8 }}>{l}</p>
+              ))}
+            </div>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#fff', marginBottom: 16 }}>Contacto</p>
+              <p style={{ fontSize: 14, color: '#6B7280' }}>andresbraver@gmail.com</p>
+            </div>
+          </div>
+          <div style={{ borderTop: '1px solid #1F2937', paddingTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <p style={{ fontSize: 13, color: '#6B7280' }}>© 2025 Donekta. Todos los derechos reservados.</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 13, color: '#6B7280' }}>🔒 Pagos seguros</span>
+              <div style={{ background: '#635BFF', borderRadius: 4, padding: '2px 8px' }}>
+                <span style={{ fontSize: 11, color: '#fff', fontWeight: 700 }}>stripe</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </footer>
+
+      <style>{`
+        .hero-text-centered { text-align: center; max-width: 720px; margin: 0 auto; }
+        .hero-text-centered .hero-desc { margin-left: auto; margin-right: auto; max-width: 600px; }
+        .hero-text-centered > div:last-child { justify-content: center; }
+        .mobile-donate { display: none; }
+        @media (max-width: 768px) {
+          .mobile-donate { display: block; position: fixed; bottom: 0; left: 0; right: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: rgba(255,255,255,0.96); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-top: 1px solid #F0F4F8; z-index: 100; }
+          body { padding-bottom: 80px; }
+          .hero-section { padding: 48px 20px !important; }
+          .hero-grid { grid-template-columns: 1fr !important; gap: 32px !important; }
+          .hero-title { font-size: 36px !important; }
+          .hero-desc { font-size: 16px !important; }
+          .nav-inner { padding: 0 16px !important; }
+          .nav-secondary-btn { display: none !important; }
+          .stats-grid { gap: 16px !important; }
+          .stats-grid p:first-child { font-size: 24px !important; }
+          .how-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
+          .comision-grid { grid-template-columns: 1fr !important; gap: 12px !important; }
+          .footer-grid { grid-template-columns: 1fr 1fr !important; gap: 28px !important; }
+          .footer-grid > div:first-child { grid-column: 1 / -1; }
+          section { padding-left: 20px !important; padding-right: 20px !important; padding-top: 56px !important; padding-bottom: 56px !important; }
+        }
+        @media (max-width: 480px) {
+          .footer-grid { grid-template-columns: 1fr !important; }
+          .stats-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
+        }
+      `}</style>
+      <div className="mobile-donate">
+        <button onClick={() => setShowAuth(true)} style={{ width: '100%', fontSize: 15, fontWeight: 700, color: '#fff', background: '#55B584', border: 'none', cursor: 'pointer', padding: 14, borderRadius: 12 }}>
+          Donar ahora
+        </button>
       </div>
+
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+
+      {/* MODAL REGISTRO DE COMUNIDAD */}
+      {showCommunityForm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 20, width: '100%', maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottom: '1px solid #F0F4F8' }}>
+              <h3 style={{ fontSize: 18, fontWeight: 900, color: '#121826' }}>Registra tu comunidad</h3>
+              <button onClick={() => { setShowCommunityForm(false); setCommReqSent(false); setCommReq({ name: '', email: '', institution: '', phone: '' }) }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: '#9CA3AF' }}>✕</button>
+            </div>
+            <div style={{ padding: 20 }}>
+              {commReqSent ? (
+                <div style={{ textAlign: 'center', padding: '24px 0' }}>
+                  <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+                  <p style={{ fontSize: 16, fontWeight: 700, color: '#121826', marginBottom: 8 }}>¡Solicitud enviada!</p>
+                  <p style={{ fontSize: 14, color: '#6F737D', lineHeight: 1.6 }}>Revisaremos tu solicitud en 1-3 días hábiles y te contactaremos por correo.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <p style={{ fontSize: 14, color: '#6F737D', marginBottom: 4, lineHeight: 1.6 }}>
+                    Llena el formulario y nos ponemos en contacto contigo para activar tu perfil en Donekta.
+                  </p>
+                  <input type="text" placeholder="Tu nombre" value={commReq.name}
+                    onChange={e => setCommReq(r => ({ ...r, name: e.target.value }))}
+                    style={{ width: '100%', border: '1px solid #E5E7EB', borderRadius: 12, padding: '10px 16px', fontSize: 14, outline: 'none' }} />
+                  <input type="email" placeholder="Correo electrónico *" value={commReq.email}
+                    onChange={e => setCommReq(r => ({ ...r, email: e.target.value }))}
+                    style={{ width: '100%', border: '1px solid #E5E7EB', borderRadius: 12, padding: '10px 16px', fontSize: 14, outline: 'none' }} />
+                  <input type="text" placeholder="Nombre de la institución *" value={commReq.institution}
+                    onChange={e => setCommReq(r => ({ ...r, institution: e.target.value }))}
+                    style={{ width: '100%', border: '1px solid #E5E7EB', borderRadius: 12, padding: '10px 16px', fontSize: 14, outline: 'none' }} />
+                  <input type="tel" placeholder="Teléfono (opcional)" value={commReq.phone}
+                    onChange={e => setCommReq(r => ({ ...r, phone: e.target.value }))}
+                    style={{ width: '100%', border: '1px solid #E5E7EB', borderRadius: 12, padding: '10px 16px', fontSize: 14, outline: 'none' }} />
+                  <button onClick={sendCommunityRequest} disabled={commReqLoading || !commReq.email || !commReq.institution}
+                    style={{ width: '100%', background: commReqLoading || !commReq.email || !commReq.institution ? '#A7D9C1' : '#55B584', color: '#fff', fontWeight: 700, fontSize: 14, padding: '12px 0', borderRadius: 12, border: 'none', cursor: 'pointer', marginTop: 4 }}>
+                    {commReqLoading ? 'Enviando...' : 'Enviar solicitud'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
